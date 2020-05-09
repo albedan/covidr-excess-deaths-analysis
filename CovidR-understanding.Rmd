@@ -517,25 +517,3 @@ The main outcomes are the following:
   + Number of deaths on the *last available day (`r LAST_DAY_AVAILABLE` 2020)*: **`r max(bg_time[ANNO == 2020 & GIORNI_DA_INIZIO == max(GIORNI_DA_INIZIO[ANNO == 2020]),TOTALE_DECESSI])`**
 
 It's crucial to have this data updated, in order to do a **proper** evaluation of this pandemic. And the way this data has been made available by ISTAT (the Italian National Institut of Statistics) could represent a serious way should we aim to a **fair cross-national analysis of COVID-19**.
-
-<!-- ## Bonus track: how (not) to properly deliver data to a large audience -->
-
-<!-- WIP -->
-<!-- library(matrixStats) -->
-<!-- cdigr <- clean_data_istat[NOME_PROVINCIA == 'Bergamo',.(DEC = sum(DECESSI)), by = list(ANNO, MONTH, DAY)] -->
-<!-- setorder(cdigr, ANNO, MONTH, DAY) -->
-<!-- cdigr[, DEC_MA_7 := frollmean(DEC, 7, align = 'center'), by = ANNO] -->
-<!-- cdigr_cast <- dcast(cdigr, MONTH + DAY ~ ANNO, value.var = 'DEC_MA_7', ) -->
-<!-- cdigr_cast[, `:=`(max_value = rowMaxs(as.matrix(.SD), na.rm=T), -->
-<!--                   mean_rest = (rowSums(.SD, na.rm=T) - rowMaxs(as.matrix(.SD), na.rm=T))/5), .SDcols=3:8] -->
-<!-- cdigr_cast[, max_anno :=  names(.SD)[max.col(.SD)], .SDcols = 3:8] -->
-<!-- cdigr_cast[, max_ratio := round(max_value / mean_rest,2)] -->
-<!-- worst_week_2015_value <- max(cdigr_cast[max_anno == '2015', max_ratio]) -->
-<!-- worst_week_2015 <- cdigr_cast[max_anno == '2015' & max_ratio == worst_week_2015_value, list(MONTH, DAY, max_ratio)] -->
-<!-- worst_week_2017_value <- max(cdigr_cast[max_anno == '2015', max_ratio]) -->
-<!-- worst_week_2017 <- cdigr_cast[max_anno == '2017' & max_ratio == worst_week_2017_value, list(MONTH, DAY, max_ratio)] -->
-
-<!-- Comparing the effects of COVID-19 against those of a strong flu on the public health of a large population is tricky. -->
-<!-- But not impossible. I'm comparing, for the same area, the worst week of COVID-19 vs. the worst week of flu in the last six years, that happens to be the week from 12th to 18th February 2015 (in the area analysed). -->
-<!-- Approaching the problem in a fair way is complex, so the methodology is a little bit, too. I'd say it's worth a look if you want to have a better understanding of my logic on the topic. -->
-<!-- TL, DR: we're definitely on a different level of magnitude, roughly 30 times as much. -->
