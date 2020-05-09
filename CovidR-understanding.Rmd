@@ -1,6 +1,5 @@
 ---
-title: Understanding COVID-19 thorugh Italian excess deaths analysis
-  and genders
+title: Understanding COVID-19 through Italian excess deaths analysis
 author: "Alberto Danese"
 date: '5 May 2020 - Original version: 7 Apr 2020'
 output:
