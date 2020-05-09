@@ -1,0 +1,541 @@
+---
+title: Understanding COVID-19 thorugh Italian excess deaths analysis
+  and genders
+author: "Alberto Danese"
+date: '5 May 2020 - Original version: 7 Apr 2020'
+output:
+  html_document:
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: no
+  pdf_document:
+    toc: yes
+---
+
+```{r Libs, include=FALSE}
+options(warn=-1)
+library(ggplot2)
+library(kableExtra)
+library(knitr)
+library(dplyr)
+library(data.table)
+library(scales)
+library(rgdal)
+library(leaflet)
+library(formattable)
+```
+
+---
+
+```{r vars, echo=FALSE}
+LAST_PUBLISHING_DAY <- '4th May'
+LAST_DAY_AVAILABLE <- '15th April'
+```
+
+## Main Focus
+
+Not all of the available data on COVID-19 have the same degree of **reliability**.
+
+Some are actually ***seriously biased***:
+
+- the **number of infected people**: strongly relies on the number of tests that a city / region / country is able to carry out, so it is largely underestimated;
+- the **number of deaths for COVID-19**: again underestimated, as not all the dead have been tested for COVID-19;
+- all of the indicators that rely on one or both of the above, for instance *mortality rate*.
+
+On the other hand, some other figures are definitely less influenced by exogenous factors:
+
+- the number of **patients in ICU** (*terapia intensiva*), as long as there is room for all those in need, is a good indicator of people with really severe symptoms;
+- the number of **admissions to ER** (*pronto soccorso*) is another good indicator - but no open data are available as far as I know;
+- **overall death trends** in time series on large enough areas is definitely the most reliable indicator of the impacts of COVID-19 - the only downside being the long delay from infection in the first place, to final reporting.
+
+I'm focusing on this last point, thanks to the data originally made available by ISTAT on 1st April, updated till 21st March 2020: https://www.istat.it/it/archivio/240401
+
+I'm updating it regularly based on new data releases: last update published on `r LAST_PUBLISHING_DAY`, with **data updated till `r LAST_DAY_AVAILABLE` 2020**.
+
+## Data and approach
+
+```{r Loading and cleaning data, echo=FALSE}
+# Transforming raw ISTAT data to regular data.table
+raw_data_istat_decessi <- fread(file = 'data/comune_giorno.csv', na.strings = 'n.d.')
+raw_data_istat_residenti <- fread('data/comuni_residenti.csv', select = c(1,2,3,11,19),
+                                  col.names = c('COD_PROVCOM','DENOMINAZIONE','ETA','MASCHI','FEMMINE'))
+raw_cod_provcom_anpr <- fread(file = 'data/comuni_anpr.csv')
+clean_data_istat <- raw_data_istat_decessi[COD_PROVCOM %in% raw_cod_provcom_anpr[,COD_PROVCOM]]
+clean_data_istat[, MONTH := as.numeric(substr(GE,1,1))]
+clean_data_istat[, DAY := as.numeric(substr(GE,2,3))]
+clean_data_istat[, c('T_15','T_16','T_17','T_18','T_19','T_20','GE'):=NULL]
+clean_data_istat <- melt(clean_data_istat, 
+                         id.vars = c('REG','PROV','NOME_REGIONE','NOME_PROVINCIA','NOME_COMUNE','COD_PROVCOM',
+                                     'CL_ETA','MONTH','DAY'),
+                         measure.vars = c('M_15','M_16','M_17','M_18','M_19','M_20',
+                                          'F_15','F_16','F_17','F_18','F_19','F_20'),
+                         variable.factor = F,
+                         variable.name = 'GENDER_ANNO',
+                         value.name = 'DECESSI')
+clean_data_istat[, GENDER := substr(GENDER_ANNO,1,1)]
+clean_data_istat[, ANNO := as.numeric(paste0('20',substr(GENDER_ANNO, nchar(GENDER_ANNO) - 1, nchar(GENDER_ANNO))))]
+clean_data_istat[, GENDER_ANNO := NULL]
+clean_data_istat[, GIORNI_DA_INIZIO := numeric()]
+
+# Dealing with leap years (anni bisestili) in order to make data comparable
+clean_data_istat[ANNO %in% c(2015,2017,2018,2019) & MONTH == 1, GIORNI_DA_INIZIO := DAY]
+clean_data_istat[ANNO %in% c(2015,2017,2018,2019) & MONTH == 2, GIORNI_DA_INIZIO := 31 + DAY]
+clean_data_istat[ANNO %in% c(2015,2017,2018,2019) & MONTH == 3, GIORNI_DA_INIZIO := 59 + DAY]
+clean_data_istat[ANNO %in% c(2015,2017,2018,2019) & MONTH == 4, GIORNI_DA_INIZIO := 90 + DAY]
+clean_data_istat[ANNO %in% c(2016,2020) & MONTH == 1, GIORNI_DA_INIZIO := DAY - 1]
+clean_data_istat[ANNO %in% c(2016,2020) & MONTH == 2, GIORNI_DA_INIZIO := 31 + DAY - 1]
+clean_data_istat[ANNO %in% c(2016,2020) & MONTH == 3, GIORNI_DA_INIZIO := 60 + DAY - 1]
+clean_data_istat[ANNO %in% c(2016,2020) & MONTH == 4, GIORNI_DA_INIZIO := 91 + DAY - 1]
+
+# No data for 29 Feb on non leap years!
+clean_data_istat <- clean_data_istat[!(ANNO %in% c(2015,2017,2018,2019) & MONTH == 2 & DAY == 29)]
+
+setcolorder(clean_data_istat, c('REG','PROV','NOME_REGIONE','NOME_PROVINCIA','NOME_COMUNE','COD_PROVCOM','ANNO',
+                                'MONTH','DAY','GIORNI_DA_INIZIO','CL_ETA','GENDER','DECESSI'))
+clean_data_istat <- clean_data_istat[GIORNI_DA_INIZIO <= max(clean_data_istat[ANNO == 2020 & DECESSI>0, GIORNI_DA_INIZIO])]
+
+typ_istat_age_group <- 
+  data.table(CL_ETA = 0:21, 
+             CLASS = c('0','1-5','6-10','11-15','16-20','21-25','26-30','31-35','36-40','41-45','46-50',
+                        '51-55','56-60','61-65','66-70','71-75','76-80','81-85','86-90','91-95','96-100','100+'),
+             MACRO_CLASS = c(rep('0-45',10),'46-50','51-55','56-60','61-65','66-70',
+                              '71-75','76-80','81-85','86-90', rep('91+',3)))
+
+# Day legend relates to 2020
+typ_day_legend <- unique(clean_data_istat[ANNO == '2020', c('GIORNI_DA_INIZIO','MONTH','DAY'), with = F])
+typ_day_legend[, DATA := paste0(DAY, '/', MONTH)]
+setorder(typ_day_legend, GIORNI_DA_INIZIO)
+```
+
+For `r length(unique(clean_data_istat$NOME_COMUNE))` Italian municipalities, the data on daily declared deaths (no matter the cause) is available with the following cross sections:
+
+- **Day**: every day for 6 years, from 2015 to 2020 (till `r LAST_DAY_AVAILABLE`);
+- **Gender**: male / female
+- **Age group**: 0, 1 to 5 years old, 6 to 10, 11 to 15, all the way to 96 to 100, and then 101 and more
+
+Instead of relying on highly biased data, I make a simple assumption: in a large enough area (like Bergamo and province, more than 1 million inhabitants) the number of deaths is largely stable and **huge anomalies have to be attributed to very specific events**, like the COVID-19 epidemic.
+
+## Focus on Bergamo and province
+```{r COVID-19 Focus on BG, echo=FALSE}
+# Stats on Bergamo
+bg <- 'Bergamo'
+bg_cleaned <- clean_data_istat[NOME_PROVINCIA == bg]
+bg_time <- bg_cleaned[GIORNI_DA_INIZIO > 0, .(TOTALE_DECESSI = sum(DECESSI)), by = list(ANNO, GIORNI_DA_INIZIO)]
+```
+
+I'm focusing on the **province of Bergamo**, heavily hit by COVID-19:
+
+- **`r length(unique(raw_data_istat_decessi[NOME_PROVINCIA == bg, COD_PROVCOM]))`** municiapitilies;
+- **`r length(unique(bg_cleaned[,COD_PROVCOM]))`** have provided full data;
+- These `r length(unique(bg_cleaned[,COD_PROVCOM]))` include all the top 10 municipalities for number of inhabitants, including the city of Bergamo itself, covering `r label_number(big.mark = "'")(sum(raw_data_istat_residenti[ETA == 999 & COD_PROVCOM %in% bg_cleaned[,COD_PROVCOM], MASCHI + FEMMINE]))` of the `r label_number(big.mark = "'")(sum(raw_data_istat_residenti[ETA == 999 & COD_PROVCOM %in% raw_data_istat_decessi[NOME_PROVINCIA == bg,COD_PROVCOM], MASCHI + FEMMINE]))` inhabitants in the province of Bergamo (*coverage*: **`r 100 * round(sum(raw_data_istat_residenti[ETA == 999 & COD_PROVCOM %in% bg_cleaned[,COD_PROVCOM], MASCHI + FEMMINE]) / sum(raw_data_istat_residenti[ETA == 999 & COD_PROVCOM %in% raw_data_istat_decessi[NOME_PROVINCIA == bg,COD_PROVCOM], MASCHI + FEMMINE]),2)`%**)
+
+A quick look on the largest municipalities included.
+Inhabitants taken from: http://demo.istat.it/pop2019/index3.html.
+
+```{r COVID-19 Municipalities, echo=FALSE}
+# Stats on Bergamo
+bg_residents <- raw_data_istat_residenti[ETA == 999 & COD_PROVCOM %in% raw_data_istat_decessi[NOME_PROVINCIA == bg,COD_PROVCOM], list(COD_PROVCOM, MUNICIPALITY = DENOMINAZIONE, INHABITANTS = MASCHI + FEMMINE)]
+bg_available_municipalities <- raw_data_istat_residenti[ETA == 999 & COD_PROVCOM %in% bg_cleaned[,COD_PROVCOM], list(COD_PROVCOM)]
+bg_available_municipalities[, DATA_AVAILABLE := 'YES']
+bg_residents <- merge(bg_residents, bg_available_municipalities, all.x = T)
+rm(bg_available_municipalities)
+setorder(bg_residents, -INHABITANTS)
+bg_residents[is.na(DATA_AVAILABLE), DATA_AVAILABLE := 'NO']
+bg_residents <- bg_residents[1:15, list(MUNICIPALITY,INHABITANTS,DATA_AVAILABLE)]
+bg_residents[, DATA_AVAILABLE := cell_spec(DATA_AVAILABLE, "html", color = ifelse(DATA_AVAILABLE == 'YES', "green", "red"))]
+bg_residents[, INHABITANTS := label_number(big.mark = "'")(INHABITANTS)]
+
+kable(bg_residents, caption = 'Municipalities in the province of Bergamo and availability of statistics on deaths in 2020', escape = F, align = "c") %>%
+  kable_styling("striped", full_width = F, position = 'left') %>%
+  column_spec(3, bold = T)
+```
+
+### Impact of COVID-19 over time
+
+The province of Bergamo has been seriously hit by COVID-19, with the number of deceased rising since the beginning of March.
+
+The graph below confirms my initial assumption about the fact that the registered death are largely constant and the impact of COVID-19 is easily visible. 
+
+```{r COVID-19 over time, echo=FALSE}
+# Daily plots of deceased over years
+ggplot(bg_time, aes(x=GIORNI_DA_INIZIO, y=TOTALE_DECESSI, group=as.factor(ANNO))) +
+  geom_smooth(aes(color=as.factor(ANNO)), method = lm, formula = y ~ splines::bs(x, 10), se = FALSE) +
+  geom_point(aes(color=as.factor(ANNO))) +
+  geom_vline(xintercept = 31, linetype='dashed', color = 'blue', size=.5) +
+  geom_vline(xintercept = 60, linetype='dashed', color = 'blue', size=.5) +
+  geom_vline(xintercept = 90, linetype='dashed', color = 'blue', size=.5) +
+  annotate('text', x = 5, y = 200, label = 'January') +
+  annotate('text', x = 37, y = 200, label = 'February') +
+  annotate('text', x = 64.5, y = 200, label = 'March') +
+  annotate('text', x = 94, y = 200, label = 'April') +
+  labs(colour = 'YEAR', x = 'DAYS SINCE BEGINNING OF YEAR', y = 'TOTAL DAILY DECEASED')
+```
+
+A better way to see this is plotting the **ratio** between the number of deaths in 2020, day by day, and the corresponding average between 2015 and 2019.
+
+The shape is slightly different (there's usually a decreasing trend in daily deaths when moving out of winter), but the overall message is confirmed: the effect of COVID-19 is clearly visible starting from the second week of March and it appears to be slowing down since the beginning of April.
+
+```{r COVID-19 over time v2, echo=FALSE}
+# Comparing 2020 vs. historical data (2015-2019, five years)
+bg_cleaned[, IS_2020 := ifelse(ANNO == 2020,'2020','AVG 2015-2019')]
+bg_deceased_ratio <- bg_cleaned[GIORNI_DA_INIZIO > 0, .(DEC = sum(DECESSI) / uniqueN(ANNO)), by = list(IS_2020, GIORNI_DA_INIZIO)]
+bg_deceased_ratio_cast <- dcast(bg_deceased_ratio, GIORNI_DA_INIZIO ~ IS_2020, value.var = 'DEC', )
+bg_deceased_ratio_cast[, RATIO_2020_VS_AVG_2015_2019 := `2020`/`AVG 2015-2019`]
+
+ggplot(bg_deceased_ratio_cast, aes(x=GIORNI_DA_INIZIO, y=RATIO_2020_VS_AVG_2015_2019)) +
+  geom_smooth(method = lm, formula = y ~ splines::bs(x, 10)) +
+  geom_point() +
+  geom_hline(yintercept = 1, linetype='dashed', color = 'blue', size=.5) +
+  geom_vline(xintercept = 31, linetype='dashed', color = 'blue', size=.5) +
+  geom_vline(xintercept = 60, linetype='dashed', color = 'blue', size=.5) +
+  geom_vline(xintercept = 91, linetype='dashed', color = 'blue', size=.5) +
+  annotate('text', x = 5, y = 12, label = 'January') +
+  annotate('text', x = 37, y = 12, label = 'February') +
+  annotate('text', x = 64.5, y = 12, label = 'March') +
+  annotate('text', x = 94, y = 12, label = 'April') +
+  annotate('text', x = 78, y = 1.5, label = 'Baseline (ratio = 1x)', fontface = 'italic') +
+  labs(x = 'DAYS SINCE BEGINNING OF YEAR', y = 'RATIO [DECEASED 2020 / MEAN 2015-2019]') +
+  scale_y_continuous(labels=function(x) paste0(x,"x"))
+```
+
+### Death toll of different age groups
+
+I decided to focus on the *two weeks from 15th to 28th of March*: the choice of these weeks (instead of focusing on the whole month of March, for instance) is due to the fact that **death occurs roughly 3 weeks (on average) since the infection**: around 5-7 days for *incubation* and *two weeks from the first symptoms to death* (https://www.worldometers.info/coronavirus/coronavirus-death-rate/#days).
+
+Given the spread of COVID-19 in late February, this appears as the best time frame to analyse in order to understand the **actual impacts** of the virus on the population during its peak.
+
+During this period, the **ratios of deaths (2020 vs. historical data (average over 2015-2019))** for age groups show that the impact is indeed larger for seniors, but it's *definitely present* across all of the age groups.
+
+The plot below focuses on the aforementioned weeks, calculating the ratio of deceased in 2020 vs. the average of 2015-2019.
+
+```{r COVID-19 Age groups and gender, echo=FALSE}
+# Comparing age groups 2020 vs. historical data (2015-2019, five years)
+bg_cleaned <- merge(bg_cleaned, typ_istat_age_group)
+bg_age <- bg_cleaned[MONTH == 3 & DAY >= 15 & DAY <= 28,
+                     .(TOTALE_DECESSI_ETA = sum(DECESSI)/ifelse(IS_2020 == 'AVG 2015-2019',5,1)),
+                     by = list(IS_2020, MACRO_CLASS)]
+bg_age_cast <- dcast(bg_age, MACRO_CLASS ~ IS_2020, value.var = 'TOTALE_DECESSI_ETA', )
+bg_age_cast[, RATIO_2020_VS_HIST := round(`2020`/`AVG 2015-2019`,2)]
+bg_age_cast[, DELTA_2020_VS_HIST := `2020` - `AVG 2015-2019`]
+setcolorder(bg_age_cast,c(1,3,2,4,5))
+
+ggplot(bg_age_cast, aes(x=MACRO_CLASS, y=RATIO_2020_VS_HIST, group=1, weight=`2020`)) +
+  geom_point(aes(size = `2020`^2), shape = 21, color = 'black', fill = '#619CFF', stroke = 1.5) +
+  geom_smooth(method=lm, formula=y ~ poly(x, 3, raw=TRUE), level = .75) + 
+  coord_cartesian(ylim = c(0,20)) +
+  labs(x = 'AGE GROUPS', y = 'RATIO [DECEASED 2020 / MEAN 2015-2019]') + 
+  scale_size(name = 'DECEASED 15-28/MAR/2020)', breaks = c(10,50,100,200)^2, labels = c(10,50,100,200)) + 
+  theme(legend.position = c(0.2, 0.75), 
+        legend.background = element_rect(fill="lightblue", size=0.5, linetype="solid", colour ="darkblue"),
+        legend.title = element_text(size=10, face="bold")) +
+  scale_y_continuous(labels=function(x) paste0(x,"x"))
+
+```
+
+Starting from people 51 and older, the impact of COVID-19 is huge and noticeable as a *multiplier* that ranges **from `r trunc(min(bg_age_cast[!MACRO_CLASS %in% c('0-45','46-50'),RATIO_2020_VS_HIST]))` to `r ceiling(max(bg_age_cast[!MACRO_CLASS %in% c('0-45','46-50'),RATIO_2020_VS_HIST]))`** (depending on the different age groups) when compared to the average mortality of 2015-2019.
+
+Details in the table below. In this specific area and for the analysed time frame, people in their 70s appear to be particularly hit by COVID-19: for people aged 71 to 80, the deaths **skyrocketed from `r sum(bg_age_cast[MACRO_CLASS %in% c('71-75','76-80'), 2])` to `r sum(bg_age_cast[MACRO_CLASS %in% c('71-75','76-80'), 3])`**. This is roughly **`r round(sum(bg_age_cast[MACRO_CLASS %in% c('71-75','76-80'), 3])/sum(bg_age_cast[MACRO_CLASS %in% c('71-75','76-80'), 2]))`x**.
+
+
+
+```{r COVID-19 Age groups table, echo=FALSE}
+kable(bg_age_cast, caption = paste0('Deaths in ',length(unique(bg_cleaned$NOME_COMUNE)),' municipalities of Bergamo and province in 2015-2019 vs. 2020, during the two weeks from 15th to 28th of March'), escape = F, align = "c") %>%
+  kable_styling("striped", full_width = F, position = 'left') %>%
+  column_spec(4, bold = T) %>%
+  row_spec(7:8, bold = T, color = "white", background = "#D7261E")
+```
+
+From a different perspective, let's consider:
+
+- the age distribution of the deaths in 2015-2019;
+- the age distribution of the *surplus in 2020*, i.e. the deaths in 2020 minus the *baseline of 2019*.
+
+The plot below shows the distribution **normalized** within each of the two groups.
+
+```{r COVID-19 Age groups multiplot, echo=FALSE}
+# Normalized plot of deceased in 2020 vs. baseline over previous years, group by age groups
+bg_age_norm <- bg_age_cast[,c(1,2,5)]
+names(bg_age_norm) <- c('MACRO_CLASS','BASELINE 2015-2019','SURPLUS 2020')
+bg_age_norm[, `BASELINE 2015-2019`:=`BASELINE 2015-2019`/sum(`BASELINE 2015-2019`)]
+bg_age_norm[, `SURPLUS 2020`:=`SURPLUS 2020`/sum(`SURPLUS 2020`)]
+bg_age_norm <- melt(bg_age_norm, 
+                         id.vars = c('MACRO_CLASS'),
+                         measure.vars = c('BASELINE 2015-2019','SURPLUS 2020'),
+                         variable.factor = F,
+                         variable.name = 'YEAR',
+                         value.name = 'DECEASED')
+
+ggplot(bg_age_norm, aes(x=MACRO_CLASS, y=DECEASED, fill=YEAR)) + 
+  geom_bar(stat = 'identity', colour='black', position = position_dodge()) +
+  labs(x = 'AGE GROUPS') + 
+  scale_y_continuous(labels = percent)
+```
+
+Comparing this *surplus* (likely due to the COVID-19 epidemic) with the *baseline*, we see some interesting insights. I'll highlight just a couple:
+
+- Under 45 years old, the impact is negligible;
+- As seen before, people in their 70s seems much more impacted by COVID-19 than people over 80 years old. 
+
+### Gender differences
+
+Taking a look at overall mortality (always in Bergamo and province, 15th to 28th of March), **gender differences** do not appear as large as suggested by the analysis of COVID-19 offical deaths - but are present nevertheless.
+
+Let's focus on the largest age groups (older than 70).
+
+```{r COVID-19 Gender plots, echo=FALSE}
+# Deceased ratios plot of deceased in 2020 vs. baseline over previous years, group by age groups
+bg_gender <- bg_cleaned[MONTH == 3 & DAY >= 15 & DAY <= 28,
+                        .(TOTALE_DECESSI_ETA = sum(DECESSI)/ifelse(IS_2020 == 'AVG 2015-2019',5,1)),
+                        by = list(IS_2020, GENDER, MACRO_CLASS)]
+bg_gender_cast <- dcast(bg_gender, MACRO_CLASS + GENDER ~ IS_2020, value.var = 'TOTALE_DECESSI_ETA', )
+bg_gender_cast[, RATIO_2020_VS_HIST := round(`2020`/`AVG 2015-2019`,2)]
+bg_gender_cast[, DELTA_2020_VS_HIST := `2020` - `AVG 2015-2019`]
+
+cbPalette <- c('#FFCC00', '#00CCCC')
+ggplot(bg_gender_cast[MACRO_CLASS %in% c('51-55','56-60','61-65','66-70','71-75','76-80','81-85','86-90','91+')],
+       aes(x=MACRO_CLASS, y=RATIO_2020_VS_HIST, fill=GENDER)) + 
+  geom_bar(stat = 'identity', colour='black', position = position_dodge()) +
+  labs(x = 'AGE GROUPS') + 
+  scale_fill_manual(values=cbPalette) +
+  scale_y_continuous(labels=function(x) paste0(x,"x"))
+```
+
+Details in the table below, for all the classes.
+
+For all age groups over 50, the ratio 2020 vs. 2015-2019 is larger for men than for women.
+
+```{r COVID-19 Gender table, echo=FALSE}
+bg_gender_cast <- bg_gender_cast %>%
+  mutate(RATIO_2020_VS_HIST = color_tile('LightYellow','OrangeRed')(RATIO_2020_VS_HIST))
+  
+kable(bg_gender_cast, caption = 'Increase of overall deaths across age groups, divided by gender',escape = F, align = "c") %>%
+  kable_styling("striped", full_width = F, position = 'left') %>%
+  column_spec(c(1,2,5), bold = T) # %>%
+  # row_spec(c(6,8,10,12,14,16,18,20,22), bold = T, color = "white", background = "#D7261E")
+```
+
+Taking a look at the overall picture, women appear indeed to be less affected by COVID-19 than men.
+
+```{r COVID-19 Gender overall, echo=FALSE}
+bg_gender_general <- bg_cleaned[MONTH == 3 & DAY >= 15 & DAY <= 28,
+                                .(TOTALE_DECESSI_ETA = sum(DECESSI)/ifelse(IS_2020 == 'AVG 2015-2019',5,1)),
+                                by = list(IS_2020, GENDER)]
+bg_gender_general_cast <- dcast(bg_gender_general, GENDER ~ IS_2020, value.var = 'TOTALE_DECESSI_ETA')
+bg_gender_general_cast[, DELTA_2020_VS_HIST := `2020` - `AVG 2015-2019`]
+bg_gender_general_cast <- bg_gender_general_cast[,c(1,3,4)]
+names(bg_gender_general_cast) <- c('GENDER','BASELINE MEAN 2015-2019','SURPLUS 2020')
+bg_gender_general_melt <- melt(bg_gender_general_cast,
+                               id.vars = c('GENDER'),
+                               measure.vars = c('BASELINE MEAN 2015-2019','SURPLUS 2020'),
+                               variable.factor = F, variable.name = 'YEAR', value.name = 'DECEASED')
+
+ggplot(bg_gender_general_melt, aes(x=GENDER, y=DECEASED, fill=YEAR)) + 
+  geom_bar(stat = 'identity', colour='black', position = position_stack(reverse = TRUE)) +
+  geom_text(data = filter(bg_gender_general_melt, YEAR == 'BASELINE MEAN 2015-2019' & GENDER == 'M'),
+     aes(label=DECEASED, hjust = 1.25)) +
+  geom_text(data = filter(bg_gender_general_melt, YEAR == 'BASELINE MEAN 2015-2019' & GENDER == 'F'),
+     aes(label=DECEASED, hjust = 1.375)) +
+  geom_text(data = filter(bg_gender_general_melt, YEAR == 'SURPLUS 2020' & GENDER == 'M'),
+     aes(label=paste0('+',DECEASED)),hjust = 0.4) +
+  geom_text(data = filter(bg_gender_general_melt, YEAR == 'SURPLUS 2020' & GENDER == 'F'),
+     aes(label=paste0('+',DECEASED)),hjust = 0.3) +
+  theme(legend.position="bottom", legend.box = "horizontal", legend.title = element_blank()) +
+  coord_flip()
+```
+
+An immediate calculation gives us the following ratios of man vs. woman affected by COVID-19:
+
+- Men: **`r round(sum(bg_gender_general_melt[YEAR == 'SURPLUS 2020' & GENDER == 'M', DECEASED]) / sum(bg_gender_general_melt[YEAR == 'SURPLUS 2020', DECEASED]),4) *100`%**
+- Women: **`r round(sum(bg_gender_general_melt[YEAR == 'SURPLUS 2020' & GENDER == 'F', DECEASED]) / sum(bg_gender_general_melt[YEAR == 'SURPLUS 2020', DECEASED]),4) *100`%**
+
+This is **way more balanced** than official figures, that suggest that **71%** of the overall deaths by COVID-19 in Italy are men, as reported by many sources, for instance here: https://www.statista.com/chart/21345/coronavirus-deaths-by-gender/
+
+## A comparison across provinces
+
+A quick **comparison** across different Italian provinces shows that indeed Bergamo has been *by far* the province that has been hit the most by COVID-19. The multiplier with respect to the previous years touches **10x** on some days on the 3rd and 4th week of March, while it's definitely lower in the other provinces (reaching up to **6x**).
+
+It's interesting to see how Lodi has definitely been the first province to be seriously hit (since the second half of February).
+
+```{r COVID-19 over time by province, echo=FALSE}
+prov_cleaned <- clean_data_istat[NOME_PROVINCIA %in% c('Bergamo', 'Piacenza', 'Brescia', 'Cremona', 'Lodi', 'Milano', 'Pavia')]
+
+prov_cleaned[, IS_2020 := ifelse(ANNO == 2020,'2020','AVG 2015-2019')]
+prov_deceased_ratio <- prov_cleaned[GIORNI_DA_INIZIO > 0, .(DEC = sum(DECESSI) / uniqueN(ANNO)), by = list(IS_2020, NOME_PROVINCIA, GIORNI_DA_INIZIO)]
+prov_deceased_ratio_cast <- dcast(prov_deceased_ratio, NOME_PROVINCIA + GIORNI_DA_INIZIO ~ IS_2020, value.var = 'DEC')
+prov_deceased_ratio_cast[, RATIO_2020_VS_AVG_2015_2019 := `2020`/`AVG 2015-2019`]
+
+ggplot(prov_deceased_ratio_cast, aes(x=GIORNI_DA_INIZIO, y=RATIO_2020_VS_AVG_2015_2019, colour = NOME_PROVINCIA)) +
+  geom_smooth(method = lm, formula = y ~ splines::bs(x, 10), se = F) +
+  stat_smooth(method = lm, formula = y ~ splines::bs(x, 10), se = F, aes(fill=NOME_PROVINCIA), geom="area", alpha=.2) + 
+  geom_hline(yintercept = 1, linetype='dashed', color = 'blue', size=.5) +
+  geom_vline(xintercept = 31, linetype='dashed', color = 'blue', size=.5) +
+  geom_vline(xintercept = 60, linetype='dashed', color = 'blue', size=.5) +
+  geom_vline(xintercept = 91, linetype='dashed', color = 'blue', size=.5) +
+  # geom_ribbon(aes(ymin = 0,ymax = predict(loess(RATIO_2020_VS_AVG_2015_2019 ~ GIORNI_DA_INIZIO),fill= NOME_PROVINCIA)), alpha = 0.3)
+  annotate('text', x = 5, y = 12, label = 'January') +
+  annotate('text', x = 37, y = 12, label = 'February') +
+  annotate('text', x = 64.5, y = 12, label = 'March') +
+  annotate('text', x = 94, y = 12, label = 'April') +
+  annotate('text', x = 78, y = 1.5, label = 'Baseline (ratio = 1x)', fontface = 'italic') +
+  labs(x = 'DAYS SINCE BEGINNING OF YEAR', y = 'RATIO [DECEASED 2020 / MEAN 2015-2019]') +
+  theme(legend.position="bottom", legend.box = "horizontal", legend.title = element_blank()) +
+  scale_y_continuous(labels=function(x) paste0(x,"x"))
+```
+
+Focusing on provinces different from Bergamo.
+
+```{r COVID-19 over time by province, facet wrap, echo=FALSE}
+ggplot(prov_deceased_ratio_cast[NOME_PROVINCIA != 'Bergamo'], aes(x=GIORNI_DA_INIZIO, y=RATIO_2020_VS_AVG_2015_2019, colour = NOME_PROVINCIA)) +
+  facet_wrap(vars(NOME_PROVINCIA)) + 
+  geom_smooth(method = lm, formula = y ~ splines::bs(x, 10), se = F) +
+  stat_smooth(method = lm, formula = y ~ splines::bs(x, 10), se = F, aes(fill=NOME_PROVINCIA), geom="area", alpha=.2) + 
+  geom_hline(yintercept = 1, linetype='dashed', color = 'blue', size=.5) +
+  geom_vline(xintercept = 31, linetype='dashed', color = 'blue', size=.5) +
+  geom_vline(xintercept = 60, linetype='dashed', color = 'blue', size=.5) +
+  geom_vline(xintercept = 91, linetype='dashed', color = 'blue', size=.5) +
+  # geom_ribbon(aes(ymin = 0,ymax = predict(loess(RATIO_2020_VS_AVG_2015_2019 ~ GIORNI_DA_INIZIO),fill= NOME_PROVINCIA)), alpha = 0.3)
+  annotate('text', x = 5, y = 8, label = 'Jan', size = 2) +
+  annotate('text', x = 37, y = 8, label = 'Feb', size = 2) +
+  annotate('text', x = 66.5, y = 8, label = 'Mar', size = 2) +
+  annotate('text', x = 98, y = 8, label = 'Apr', size = 2) +
+  labs(x = 'DAYS SINCE BEGINNING OF YEAR', y = 'RATIO [DECEASED 2020 / MEAN 2015-2019]') +
+  theme(legend.position="none") +
+  scale_y_continuous(labels=function(x) paste0(x,"x")) +
+  scale_color_brewer(palette="Dark2") + 
+  scale_fill_brewer(palette="Dark2")
+```
+
+A different point of view to interpret the same data. In order to avoid possible reporting mistakes or delays, I'm working on a **7-day centered moving average**. Here I highlight the magnitude of the COVID-19 impact (as the maximum multiplier with respect to the deaths registered on the previous years) and I refer to 3 days:
+
+- **First signs** as the first day where the number of deaths in the province topped the **+50%** (i.e **1.5x**) with respect to the baseline 2015-2019 - always on a 7-day moving average;
+- **Worst day** refers to when the highest multiplier has been reached;
+- **Closer to normal** is the day (if available) when the multiplier has got back to below **1.5x**.
+
+```{r COVID-19 relevant days by province, echo=FALSE}
+setorder(prov_deceased_ratio, GIORNI_DA_INIZIO)
+prov_deceased_ratio_mov_avg <- copy(prov_deceased_ratio)
+
+prov_deceased_ratio_mov_avg [, DEC_MA := lapply(.SD, frollmean, n = 7, fill = NA, align="center"), 
+                                   by = list(NOME_PROVINCIA,IS_2020), .SDcols =  'DEC']
+prov_deceased_ratio_mov_avg_cast <- dcast(prov_deceased_ratio_mov_avg, 
+                                          NOME_PROVINCIA + GIORNI_DA_INIZIO ~ IS_2020, value.var = 'DEC_MA')
+prov_deceased_ratio_mov_avg_cast[, RATIO_2020_VS_AVG_2015_2019 := `2020`/`AVG 2015-2019`]
+
+prov_deceased_ratio_mov_avg_cast <- merge(prov_deceased_ratio_mov_avg_cast, typ_day_legend, by = 'GIORNI_DA_INIZIO')
+prov_deceased_ratio_mov_avg_cast <- prov_deceased_ratio_mov_avg_cast[!is.na(RATIO_2020_VS_AVG_2015_2019)]
+
+prov_stats <- 
+  prov_deceased_ratio_mov_avg_cast[, .(fs = min(GIORNI_DA_INIZIO[RATIO_2020_VS_AVG_2015_2019 > 1.5]),
+                                       wd = GIORNI_DA_INIZIO[which.max(RATIO_2020_VS_AVG_2015_2019)],
+                                       ctn = min(GIORNI_DA_INIZIO[RATIO_2020_VS_AVG_2015_2019 < 1.5 &
+                                          GIORNI_DA_INIZIO > GIORNI_DA_INIZIO[which.max(RATIO_2020_VS_AVG_2015_2019)]]),
+                                       MAX_MAGNITUDE = paste0(round(max(RATIO_2020_VS_AVG_2015_2019),2),'x')),
+                                   by = NOME_PROVINCIA]
+prov_stats[sapply(prov_stats, is.infinite)] <- NA
+prov_stats <- merge(prov_stats, typ_day_legend[, list(GIORNI_DA_INIZIO, FIRST_SIGNS = format(as.Date(DATA,'%d/%m'),'%d %b'))],
+                    all.x = T, by.x = 'fs', by.y = 'GIORNI_DA_INIZIO', )
+prov_stats <- merge(prov_stats, typ_day_legend[, list(GIORNI_DA_INIZIO, WORST_DAY = format(as.Date(DATA,'%d/%m'),'%d %b'))],
+                    all.x = T, by.x = 'wd', by.y = 'GIORNI_DA_INIZIO')
+prov_stats <- merge(prov_stats, typ_day_legend[, list(GIORNI_DA_INIZIO, CLOSER_TO_NORMAL = format(as.Date(DATA,'%d/%m'),'%d %b'))],
+                    all.x = T, by.x = 'ctn', by.y = 'GIORNI_DA_INIZIO')
+
+prov_stats[, c('fs','wd','ctn') := NULL]
+setorder(prov_stats, NOME_PROVINCIA)
+
+kable(prov_stats, align = 'lcccc',
+      caption = 'Critical days for COVID-19 epidemic across different provinces. Centered moving average over 7 days.') %>%
+  kable_styling("striped", full_width = F, position = 'left') %>%
+  column_spec(c(2), bold = T) %>%
+  row_spec(c(1), bold = T, color = "white", background = "#D7261E") %>%
+  row_spec(c(2,3,4,7), bold = T, color = "white", background = "#FF8C00")
+
+```
+
+## An overview on Lombardy
+
+For each municipality in Lombardy that provided the data, you can see the usual ratio: overall deaths in 2020 vs. average in 2015-2019, for the two weeks 15th to 28th March.
+
+```{r COVID-19 Italy map, echo=FALSE}
+geo_com_ita <- readOGR("data/Limiti01012020_g/Com01012020_g", verbose = FALSE)
+geo_com_ita <- spTransform(geo_com_ita, CRS("+proj=longlat +datum=WGS84 +no_defs"))
+
+ita_stat <- copy(clean_data_istat)
+ita_stat[, IS_2020 := ifelse(ANNO == 2020,'2020','AVG 2015-2019')]
+ita_deceased_ratio <- ita_stat[MONTH == 3 & DAY>=15 & DAY<=28,
+                               .(DEC = sum(DECESSI) / uniqueN(ANNO)),
+                               by = list(COD_PROVCOM, NOME_COMUNE, IS_2020)]
+ita_deceased_ratio_cast <- dcast(ita_deceased_ratio, COD_PROVCOM + NOME_COMUNE ~ IS_2020, value.var = 'DEC')
+ita_deceased_ratio_cast[, MAGNITUDE := `2020`/`AVG 2015-2019`]
+# ita_deceased_ratio_cast <- ita_deceased_ratio_cast[, c('COD_PROVCOM', 'NOME_COMUNE', 'MAGNITUDE'), with = F]
+
+geo_com_ita <- merge(geo_com_ita, ita_deceased_ratio_cast, by.x = 'PRO_COM', by.y = 'COD_PROVCOM')
+
+geo_lomb <- geo_com_ita[geo_com_ita$COD_REG == 3,]
+geo_lomb_labels <- ifelse(!is.na(geo_lomb$MAGNITUDE), sprintf(
+  "<strong>%s</strong><br/><strong>%g</strong> times vs. the baseline 2015-2019<br/><strong>%g deaths</strong> in 15-28/3/2020 vs. <strong>%g</strong> average",
+  geo_lomb$NOME_COMUNE, round(geo_lomb$MAGNITUDE,2), geo_lomb$`2020`, geo_lomb$`AVG 2015-2019`
+), sprintf("<strong>%s</strong><br/><italic>No data available</italic>", geo_lomb$COMUNE))%>% lapply(htmltools::HTML)
+
+na_col <- '#C0C0C0'
+qpal <- colorBin("YlOrRd", geo_lomb$MAGNITUDE, bins = c(0,1,1.5,2,3,4,6,10,Inf), na.color = na_col)
+qpal_colors <- c(unique(qpal(sort(geo_lomb$MAGNITUDE))), na_col) # hex codes
+
+leaflet(geo_lomb) %>%
+  addPolygons(color = "#444444", weight = 1, smoothFactor = 0.5,
+              opacity = 1.0, fillOpacity = 0.5,
+              fillColor = ~qpal(MAGNITUDE),
+              highlightOptions = highlightOptions(color = "white", weight = 2, bringToFront = TRUE),
+              label = geo_lomb_labels,
+              labelOptions = labelOptions(
+                style = list("font-weight" = "normal", padding = "3px 8px"),
+                textsize = "15px",
+                direction = "auto")) %>%
+  addTiles() %>% 
+  addLegend(colors = qpal_colors, opacity = 0.7, title = 'Deaths increase vs.<br>15-28 March 2015-2019', position = "bottomright", 
+            labels = c('No increment','Up to 1.5x','1.5-2x','2-3x','3-4x','4-6x','6-10x','Over 10x','NA')) %>%
+  setView(lng = 10.2, lat = 45.66, zoom = 8)
+
+```
+
+## Notes and Conclusions
+The approach shown in this analysis doesn't rely on **highly biased data** as the number of infected or the number of official deaths by COVID-19 (i.e. people who have been tested).
+
+Instead, it largely focuses on a **specific area** (Bergamo and province) in two **specific weeks** (15th to 28th of March), building on the idea that the huge increase of registered deaths in this area, both as compared to 2019 as well as to previous years, is *undoubtedly* related to COVID-19.
+
+The main outcomes are the following:
+
+- The impact of COVID-19 is ***huge***: counting all of the municipalities analysed, there had never been a day in the first three months of the last few years with **more than `r max(bg_time[ANNO != 2020,TOTALE_DECESSI])` deaths**. In 2020, **we've had `r sum(bg_time[,TOTALE_DECESSI]>200)` days with more than 200 deaths a day**, roughly `r round(200 / max(bg_time[ANNO != 2020,TOTALE_DECESSI]))` times as much - and during the second half of March (15th to 28th), the total of deceased is more than `r round(sum(bg_age_cast[,3])/sum(bg_age_cast[,2]))` times what was registered in 2019;
+- **All age groups** over 45 years old **are somehow affected by this epidemic**: there's an otherwise inexplicable increase in registered deaths that can be measured as a *multiplier* with respect to historical data
+  + Older people have a higher overall mortality, but this is true in general: the distribution of excess deaths across age groups is not substantially different than what is measurable on historical data;
+  + People in their 70s appear to be more affected than people in their 80s or 90s;
+- **Gender differences**, while definitely present (a larger percentage of men are dying), **are probably not as large as they seem to be** when looking at official data coming relative to deceased people who tested positive for COVID-19;
+- There's still **a long way to go**. Four numbers to understand why:
+  + *Average* number of *deaths per day*, registered in *2015-2019*: **`r round(mean(bg_time[ANNO < 2020, TOTALE_DECESSI]))`**
+  + *Max* number of *deaths per day*, registered in *2015-2019*: **`r max(bg_time[ANNO < 2020, TOTALE_DECESSI])`**
+  + *Max* number of *deaths per day*, registered in *2020* during COVID-19 epidemic: **`r max(bg_time[ANNO == 2020, TOTALE_DECESSI])`**
+  + Number of deaths on the *last available day (`r LAST_DAY_AVAILABLE` 2020)*: **`r max(bg_time[ANNO == 2020 & GIORNI_DA_INIZIO == max(GIORNI_DA_INIZIO[ANNO == 2020]),TOTALE_DECESSI])`**
+
+It's crucial to have this data updated, in order to do a **proper** evaluation of this pandemic. And the way this data has been made available by ISTAT (the Italian National Institut of Statistics) could represent a serious way should we aim to a **fair cross-national analysis of COVID-19**.
+
+<!-- ## Bonus track: how (not) to properly deliver data to a large audience -->
+
+<!-- WIP -->
+<!-- library(matrixStats) -->
+<!-- cdigr <- clean_data_istat[NOME_PROVINCIA == 'Bergamo',.(DEC = sum(DECESSI)), by = list(ANNO, MONTH, DAY)] -->
+<!-- setorder(cdigr, ANNO, MONTH, DAY) -->
+<!-- cdigr[, DEC_MA_7 := frollmean(DEC, 7, align = 'center'), by = ANNO] -->
+<!-- cdigr_cast <- dcast(cdigr, MONTH + DAY ~ ANNO, value.var = 'DEC_MA_7', ) -->
+<!-- cdigr_cast[, `:=`(max_value = rowMaxs(as.matrix(.SD), na.rm=T), -->
+<!--                   mean_rest = (rowSums(.SD, na.rm=T) - rowMaxs(as.matrix(.SD), na.rm=T))/5), .SDcols=3:8] -->
+<!-- cdigr_cast[, max_anno :=  names(.SD)[max.col(.SD)], .SDcols = 3:8] -->
+<!-- cdigr_cast[, max_ratio := round(max_value / mean_rest,2)] -->
+<!-- worst_week_2015_value <- max(cdigr_cast[max_anno == '2015', max_ratio]) -->
+<!-- worst_week_2015 <- cdigr_cast[max_anno == '2015' & max_ratio == worst_week_2015_value, list(MONTH, DAY, max_ratio)] -->
+<!-- worst_week_2017_value <- max(cdigr_cast[max_anno == '2015', max_ratio]) -->
+<!-- worst_week_2017 <- cdigr_cast[max_anno == '2017' & max_ratio == worst_week_2017_value, list(MONTH, DAY, max_ratio)] -->
+
+<!-- Comparing the effects of COVID-19 against those of a strong flu on the public health of a large population is tricky. -->
+<!-- But not impossible. I'm comparing, for the same area, the worst week of COVID-19 vs. the worst week of flu in the last six years, that happens to be the week from 12th to 18th February 2015 (in the area analysed). -->
+<!-- Approaching the problem in a fair way is complex, so the methodology is a little bit, too. I'd say it's worth a look if you want to have a better understanding of my logic on the topic. -->
+<!-- TL, DR: we're definitely on a different level of magnitude, roughly 30 times as much. -->

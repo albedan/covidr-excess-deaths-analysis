@@ -1,0 +1,8 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+*.html
+data/Limiti01012020_g
+data/comune_giorno.csv
+data/comuni_residenti.csv
