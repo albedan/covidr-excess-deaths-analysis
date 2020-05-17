@@ -1,7 +1,7 @@
 ---
 title: Understanding COVID-19 through Italian excess deaths analysis
 author: "Alberto Danese"
-date: '5 May 2020 - Original version: 7 Apr 2020'
+date: '17 May 2020 - Original version: 7 Apr 2020'
 output:
   html_document:
     toc: yes
@@ -23,6 +23,10 @@ library(scales)
 library(rgdal)
 library(leaflet)
 library(formattable)
+library(viridis)
+library(gganimate)
+library(gifski)
+library(broom)
 ```
 
 ---
@@ -516,3 +520,76 @@ The main outcomes are the following:
   + Number of deaths on the *last available day (`r LAST_DAY_AVAILABLE` 2020)*: **`r max(bg_time[ANNO == 2020 & GIORNI_DA_INIZIO == max(GIORNI_DA_INIZIO[ANNO == 2020]),TOTALE_DECESSI])`**
 
 It's crucial to have this data updated, in order to do a **proper** evaluation of this pandemic. And the way this data has been made available by ISTAT (the Italian National Institut of Statistics) could represent a serious way should we aim to a **fair cross-national analysis of COVID-19**.
+
+## Bonus track: an animated map
+A map of Lombardy and its 12 provinces, *animated* over time, gives a clear picture on how COVID-19 affected this region, with huge differences across provinces.
+
+While the situation is largely consistent with previous years till mid February across the whole region, the province of **Lodi** quickly shows the first signs of the COVID-19 **before the beginning of March**.
+
+From then on, **Bergamo** and the neighbouring provinces are devasted, with peripheral provinces (Varese in the North West, Mantova in the South East) definitely less impacted. The situation for the last day available is still **much worse** then the beginning of the time series (in January).
+
+```{r COVID-19 Animated Lombardy map, echo=FALSE}
+prov2020 <- readOGR("data/Limiti01012020_g/ProvCM01012020_g", verbose = FALSE)
+prov2020_df <- suppressMessages(tidy(prov2020))
+
+prov2020_names <- data.table(coordinates(prov2020))
+names(prov2020_names) <- c('Longitude_prov', 'Latitude_prov')
+prov2020_names[, NOME_PROVINCIA := ifelse(nchar(as.character(prov2020@data$DEN_PROV))>1,
+                                                     as.character(prov2020@data$DEN_PROV),
+                                                     as.character(prov2020@data$DEN_CM))]
+prov2020_names[, SIGLA_PROVINCIA:= prov2020@data$SIGLA]
+prov2020_names[, id:= seq(0,nrow(prov2020_names)-1)]
+
+prov2020_df <- as.data.table(merge(prov2020_df, prov2020_names, by = 'id'))
+
+lomb <- clean_data_istat[NOME_REGIONE == 'Lombardia']
+lomb[, IS_2020 := ifelse(ANNO == 2020,'2020','AVG 2015-2019')]
+lomb_deceased_ratio <- lomb[GIORNI_DA_INIZIO > 0, .(DEC = sum(DECESSI) / uniqueN(ANNO)), 
+                            by = list(IS_2020, NOME_PROVINCIA, GIORNI_DA_INIZIO)]
+lomb_deceased_ratio_cast <- dcast(lomb_deceased_ratio, NOME_PROVINCIA + GIORNI_DA_INIZIO ~ IS_2020, value.var = 'DEC')
+lomb_deceased_ratio_cast[, RATIO_2020_VS_AVG_2015_2019 := `2020`/`AVG 2015-2019`]
+setorder(lomb_deceased_ratio, GIORNI_DA_INIZIO)
+lomb_deceased_ratio_mov_avg <- copy(lomb_deceased_ratio)
+
+lomb_deceased_ratio_mov_avg [, DEC_MA := lapply(.SD, frollmean, n = 7, fill = NA, align="center"), 
+                             by = list(NOME_PROVINCIA,IS_2020), .SDcols =  'DEC']
+lomb_deceased_ratio_mov_avg_cast <- dcast(lomb_deceased_ratio_mov_avg, 
+                                          NOME_PROVINCIA + GIORNI_DA_INIZIO ~ IS_2020, value.var = 'DEC_MA')
+lomb_deceased_ratio_mov_avg_cast[, RATIO_2020_VS_AVG_2015_2019 := `2020`/`AVG 2015-2019`]
+
+lomb_deceased_ratio_mov_avg_cast <- merge(lomb_deceased_ratio_mov_avg_cast, typ_day_legend, by = 'GIORNI_DA_INIZIO')
+lomb_deceased_ratio_mov_avg_cast <- lomb_deceased_ratio_mov_avg_cast[!is.na(RATIO_2020_VS_AVG_2015_2019)]
+
+
+prov2020_df <- prov2020_df[NOME_PROVINCIA %in% lomb_deceased_ratio_mov_avg_cast[,NOME_PROVINCIA]]
+prov2020_df <- merge(prov2020_df, lomb_deceased_ratio_mov_avg_cast, by = 'NOME_PROVINCIA', allow.cartesian=TRUE)
+
+lomb_map <- ggplot(data = prov2020_df) +
+  geom_polygon(aes(x = long, y = lat, fill = RATIO_2020_VS_AVG_2015_2019, group = group),
+               color = "black") +
+  coord_equal() + 
+  scale_fill_viridis(option = "inferno", direction = -1, name = "Death ratio 2020 vs. baseline",
+                     breaks = c(1,3,5,7,9),
+                     labels = paste0(c(1,3,5,7,9),'x'),
+                     guide = guide_colorbar(
+                       direction = "horizontal",
+                       barheight = unit(.05, units = "npc"),
+                       barwidth = unit(.5, units = "npc"),
+                       draw.ulim = FALSE,
+                       title.position = 'top',
+                       title.hjust = 0.5,
+                       title.vjust = 0.5
+                     )) + 
+  theme(axis.text.x = element_blank(),axis.text.y = element_blank(),axis.ticks = element_blank(),
+                     legend.position = "bottom") +
+  xlab(" ") + ylab(" ") +
+  geom_text(aes(label = SIGLA_PROVINCIA, x = Longitude_prov, y = Latitude_prov)) +
+  labs(title = 'Death ratio: 2020 vs. baseline. Status on {frame_time}',
+       subtitle = 'Ratio of deceased (over a 7-day moving window)') +
+  transition_time(as.Date(DATA, '%d/%m'))
+
+lomb_map_anim <- animate(lomb_map, nframes = length(unique(prov2020_df[,DATA])),
+                         fps = 3, width = 800, height = 450,
+                         end_pause = 20)
+lomb_map_anim
+```
