@@ -1,4 +1,7 @@
 # CovidR - Understanding COVID-19 thorugh Italian excess deaths analysis
+
+[![eRum2020::CovidR](https://badgen.net/https/runkit.io/erum2020-covidr/badge/branches/master/danese-covid19-understanding?cache=300)](https://milano-r.github.io/erum2020-covidr-contest/danese-covid19-understanding.html)
+
 Why are we expecting to **understand** COVID-19, when most of the analysis rely on the same biased, unreliable and dull data?
 
 Death and cases are counted *differently* across countries. In Italy, regions and provinces have *different capabilities and policies* when it comes to testing the population. All this makes drawing conclusions a hard and risky task. 
